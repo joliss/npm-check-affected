@@ -1,0 +1,175 @@
+#!/usr/bin/env node
+
+var fs = require('fs')
+var npm = require('npm')
+var program = require('commander')
+var RSVP = require('rsvp')
+var Promise = require('rsvp').Promise
+var request = RSVP.denodeify(require('request'), true)
+var semver = require('semver')
+
+
+function cli () {
+  program
+    .version(JSON.parse(fs.readFileSync(__dirname + '/../package.json')).version)
+    .usage('<file-or-url>')
+    .parse(process.argv)
+
+  if (program.args.length !== 1) {
+    program.outputHelp()
+    process.exit(1)
+  }
+
+  var versionSpecOrFileOrURL = program.args[0]
+
+  Promise.all([readDependencyGraph(), readVersionSpec(versionSpecOrFileOrURL)])
+    .then(function (arr) {
+      var graph = arr[0]
+      var spec = arr[1]
+      if (graph.name == null) throw new Error('No "name" property found; are you running outside a project directory, or are you missing a package.json file?')
+      if (Object.keys(spec).length === 0) throw new Error('Got empty version spec')
+      var packages = dedupPackages(allPackages(graph))
+      var results = checkPackages(packages, spec)
+      var good = results[0], bad = results[1], unknown = results[2]
+      printResults(good, bad, unknown, spec)
+    })
+    .catch(function (err) {
+      if (err.stack) {
+        console.error(err.stack)
+      } else {
+        console.error(err)
+      }
+      process.exit(1)
+    })
+}
+
+cli()
+
+function readDependencyGraph () {
+  var load = RSVP.denodeify(npm.load)
+  return load().then(function (npm) {
+    var ls = RSVP.denodeify(npm.commands.ls, true)
+    return ls([], true)
+  }).then(function (results) {
+    var data = results[0], lite = results[1]
+    return lite
+  })
+}
+
+function readVersionSpec (specOrFileOrURL, cb) {
+  return RSVP.resolve()
+    .then(function () {
+      if (/\{/.test(specOrFileOrURL)) {
+        return specOrFileOrURL
+      }
+      if (/^https?:/.test(specOrFileOrURL)) {
+        return request(specOrFileOrURL).then(function (results) {
+          var response = results[0], body = results[1]
+          if (response.statusCode !== 200) {
+            throw new Error('Got HTTP status code ' + response.statusCode)
+          }
+          return body
+        })
+      } else {
+        return fs.readFileSync(specOrFileOrURL, { encoding: 'utf8' })
+      }
+    })
+    .then(JSON.parse)
+}
+
+// Return array of pkg and all dependencies; may contain duplicates
+function allPackages (pkg, _parentChain) {
+  if (_parentChain == null) _parentChain = []
+  pkg.parentChain = _parentChain // mutate :(
+  var packages = [pkg]
+  for (var depName in pkg.dependencies) {
+    if (pkg.dependencies.hasOwnProperty(depName)) {
+      var dependency = pkg.dependencies[depName]
+      dependency.name = depName // mutate :(
+      packages = packages.concat(allPackages(dependency, [pkg].concat(_parentChain)))
+    }
+  }
+  return packages
+}
+
+function dedupPackages (packages) {
+  var dedupedPackages = []
+  iLoop: for (var i = 0; i < packages.length; i++) {
+    var name = packages[i].name, version = packages[i].version
+    for (var j = 0; j < dedupedPackages.length; j++) {
+      // Is duplicate?
+      if (dedupedPackages[j].name === name &&
+          dedupedPackages[j].version === version) {
+        continue iLoop
+      }
+    }
+    dedupedPackages.push(packages[i])
+  }
+  return dedupedPackages
+}
+
+function checkPackages (packages, spec) {
+  var good = [], bad = [], unknown = []
+  for (var i = 0; i < packages.length; i++) {
+    var pkg = packages[i]
+    if (pkg.missing) {
+      throw new Error('Package ' + pkg.name + ' is missing; run `npm install` to install all your packages')
+    }
+    if (pkg.name == null || pkg.version == null) {
+      console.error('Got weird package:')
+      console.error(pkg)
+      throw new Error('Expected package to have name and version; something went wrong')
+    }
+    if (spec[pkg.name] != null) {
+      if (semver.satisfies(pkg.version, spec[pkg.name])) {
+        bad.push(pkg)
+      } else {
+        good.push(pkg)
+      }
+    } else {
+      unknown.push(pkg)
+    }
+  }
+  return [good, bad, unknown]
+}
+
+function formatPackage (pkg) {
+  return pkg.name + ' ' + pkg.version
+}
+
+function formatParentChain (pkg) {
+  return pkg.parentChain.map(function (parent) {
+    return 'required by ' + formatPackage(parent)
+  }).join(', which is ')
+}
+
+function printResults (good, bad, unknown, spec) {
+  console.log('Ignoring ' + unknown.length + ' package(s) we don\'t care about')
+  console.log()
+  console.log('Found ' + good.length + ' package(s) known to be good')
+  for (var i = 0; i < good.length; i++) {
+    console.log('GOOD ' + formatPackage(good[i]))
+  }
+  console.log()
+  console.log('Found ' + bad.length + ' package(s) known to be bad')
+  for (i = 0; i < bad.length; i++) {
+    var badLine = 'BAD  ' + formatPackage(bad[i])
+    badLine += ' (matches "' + spec[bad[i].name] + '")'
+    if (bad[i].parentChain.length) badLine += ', ' + formatParentChain(bad[i])
+    console.log(badLine)
+  }
+  console.log()
+  if (bad.length === 0) {
+    if (good.length === 0) {
+      console.log('0 good packages and 0 bad packages found')
+      console.log('Your application appears unaffected, but perhaps something went wrong')
+      process.exit(0)
+    } else {
+      console.log('Your application is unaffected :-)')
+      process.exit(0)
+    }
+  } else {
+    console.log('Your application is affected :-(')
+    process.exit(1)
+  }
+}

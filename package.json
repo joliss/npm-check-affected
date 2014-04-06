@@ -1,0 +1,31 @@
+{
+  "name": "npm-check-affected",
+  "description": "Check 'npm ls' for installed packages matching a given version spec",
+  "version": "0.0.0",
+  "author": "Jo Liss <joliss42@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joliss/npm-check-affected"
+  },
+  "license": "MIT",
+  "bin": {
+    "npm-check-affected": "bin/npm-check-affected"
+  },
+  "engines": {
+    "node": ">= 0.10.0"
+  },
+  "preferGlobal": true,
+  "keywords": [
+    "npm",
+    "security",
+    "vulnerability",
+    "issue"
+  ],
+  "dependencies": {
+    "npm": "^1.4.6",
+    "semver": "^2.2.1",
+    "commander": "^2.2.0",
+    "request": "^2.34.0",
+    "rsvp": "^3.0.6"
+  }
+}
